@@ -41,7 +41,7 @@ wishlist_items  exchange→exchanges, user→users, title, url?, note?
 
 | Collection | list / view | create | update | delete |
 |---|---|---|---|---|
-| users | self, or shares a group | — (hook/admin) | self (name only) | — |
+| users | self, or shares a group (`groups_via_members.members.id ?= auth`) | — (hook/admin) | self (name only) | — |
 | groups | `members.id ?= auth` | any logged-in user, `host = auth` | host, name only | — |
 | exchanges | `group.members.id ?= auth` | `group.host = auth` | host, `status = "open"`, body must not set `status`/`group`/`year` | — |
 | exclusions | `group.host = auth` | `group.host = auth` | — | `group.host = auth` |
@@ -89,7 +89,7 @@ Collections, rules, indexes and the OTP template are defined in `pb_migrations/`
 
 - [PocketBase is pre-1.0, so minor versions can break APIs] → Pin one release, commit a `PB_VERSION` file, and read the changelog before upgrading.
 - [A wrong API rule leaks assignments, breaking the core promise] → Add an explicit secrecy check to the tasks: as a non-host and as the host, list assignments, rules and other groups through the REST API and confirm only the allowed rows come back.
-- [It's unclear whether same-group user visibility can be expressed in one rule (joining `groups` twice on the same record)] → Verify early. Fallback: return member names through the group-view expand, or add a small `/api/groups/{id}/members` route.
+- [It's unclear whether same-group user visibility can be expressed in one rule (joining `groups` twice on the same record)] → Resolved: two `@collection.groups.members` conditions collapse onto one member, but the back-relation `groups_via_members.members.id ?= @request.auth.id` works (verified with three users).
 - [The host can force a pairing by excluding everyone except one person] → Accepted. The trust model is friends and family, and only the host sees rules.
 - [The superuser can see every assignment] → Accepted and required. That's the operator.
 - [Login depends on email delivery] → Use a reputable SMTP provider. The link can be re-requested at any time.

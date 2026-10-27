@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Exchange · Secret Santa</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main id="app"></main>
+<p id="error" role="alert"></p>
+<script src="https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.umd.js" integrity="sha384-Pr74Q4nJqBcqXYMrsOS8tSw8t8N0Nayn7pWqFRdz9MsePI7uo55HNdxwrCcIRD8e" crossorigin="anonymous"></script>
+<script src="/app.js"></script>
+<script>
+const app = document.getElementById("app")
+const id = param("id")
+const me = requireLogin()
+let hostId
+
+const isWebLink = (u) => /^https?:\/\//i.test(u || "")
+const itemList = (items) => items.length
+  ? html`<ul>${items.map((i) => html`<li>
+      ${isWebLink(i.url) ? html`<a href="${i.url}" target="_blank" rel="noopener noreferrer">${i.title}</a>` : i.title}
+      ${i.note ? html`<span class="muted">· ${i.note}</span>` : ""}</li>`)}</ul>`
+  : html`<p class="muted">Nothing on the list yet.</p>`
+
+const itemFields = (i = {}) => html`
+  <input name="title" value="${i.title}" placeholder="Gift idea" required maxlength="200">
+  <input type="url" name="url" value="${i.url}" placeholder="Link (optional)">
+  <input name="note" value="${i.note}" placeholder="Note: size, color… (optional)" maxlength="1000">`
+
+async function show() {
+  const x = await pb.collection("exchanges").getOne(id, { expand: "group.members" })
+  const group = x.expand.group
+  const members = group.expand?.members || []
+  const name = (uid) => members.find((m) => m.id === uid)?.name || "?"
+  hostId = group.host
+  const isHost = group.host === me.id
+  const inIt = x.participants.includes(me.id)
+  const drawn = x.status === "drawn"
+  const byExchange = pb.filter("exchange = {:id}", { id })
+  const mine = drawn && inIt ? (await pb.collection("assignments").getFullList({ filter: byExchange }))[0] : null
+  const items = inIt ? await pb.collection("wishlist_items").getFullList({ filter: byExchange, sort: "created" }) : []
+  const listOf = (uid) => items.filter((i) => i.user === uid)
+  const others = x.participants.filter((p) => p !== me.id && p !== mine?.receiver)
+  document.title = `${group.name} ${x.year} · Secret Santa`
+
+  render(app, html`
+    <nav><a href="/group.html?id=${group.id}">← ${group.name}</a></nav>
+    <h1>${group.name} ${x.year} <span class="tag ${x.status}">${x.status}</span></h1>
+
+    ${!inIt ? html`<p class="card muted">You're not taking part in this exchange.</p>` : ""}
+    ${mine ? html`<section class="card highlight">
+        <h2>🎅 You're the Secret Santa of ${name(mine.receiver)}</h2>
+        ${itemList(listOf(mine.receiver))}
+      </section>`
+      : inIt && !drawn ? html`<p class="card muted">The draw hasn't happened yet. Fill in your wish list meanwhile!</p>` : ""}
+
+    ${inIt ? html`<section class="card">
+      <h2>Your wish list</h2>
+      ${listOf(me.id).map((i) => html`<form data-action="saveItem" class="item">
+        <input type="hidden" name="id" value="${i.id}">${itemFields(i)}
+        <button>Save</button>
+        <button type="button" class="link" data-action="deleteItem" data-id="${i.id}">delete</button>
+      </form>`)}
+      <form data-action="addItem" class="item">${itemFields()}<button>Add</button></form>
+    </section>
+
+    <section class="card">
+      <h2>Everyone's wish lists</h2>
+      ${others.map((uid) => html`<h3>${name(uid)}</h3>${itemList(listOf(uid))}`)}
+    </section>` : ""}
+
+    ${isHost ? html`<section class="card">
+      <h2>Host</h2>
+      ${drawn ? html`
+        <p>The draw is done and everyone got an email. You only see your own match, like everyone else.</p>
+        <div class="row">
+          <button type="button" data-action="draw" data-confirm="Redraw? Everyone gets a new person.">Redraw</button>
+          <button type="button" data-action="reset" data-confirm="Cancel the draw so you can change participants or rules?">Reset</button>
+        </div>`
+      : html`
+        <form data-action="saveParticipants">
+          <p class="muted">Who takes part this year?</p>
+          ${members.map((m) => html`<label class="check">
+            <input type="checkbox" name="participants" value="${m.id}"
+              ${x.participants.includes(m.id) || m.id === group.host ? html`checked` : ""} ${m.id === group.host ? html`disabled` : ""}>
+            ${m.name}</label>`)}
+          <div><button>Save participants</button></div>
+        </form>
+        <p><button type="button" data-action="draw" data-confirm="Run the draw now? Everyone will get an email.">Run the draw</button></p>`}
+    </section>` : ""}`)
+}
+
+bind({
+  async addItem(values) {
+    await pb.collection("wishlist_items").create({ exchange: id, user: me.id, ...values })
+    await show()
+  },
+  async saveItem({ id: itemId, ...values }) {
+    await pb.collection("wishlist_items").update(itemId, values)
+    await show()
+  },
+  async deleteItem({ id: itemId }) {
+    await pb.collection("wishlist_items").delete(itemId)
+    await show()
+  },
+  async saveParticipants(_, form) {
+    const participants = new Set([hostId, ...new FormData(form).getAll("participants")])
+    await pb.collection("exchanges").update(id, { participants: [...participants] })
+    await show()
+  },
+  async draw() {
+    await pb.send(`/api/exchanges/${id}/draw`, { method: "POST" })
+    await show()
+  },
+  async reset() {
+    await pb.send(`/api/exchanges/${id}/reset`, { method: "POST" })
+    await show()
+  },
+})
+show().catch(showError)
+</script>
+</body>
+</html>

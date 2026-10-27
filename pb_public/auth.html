@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Log in · Secret Santa</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main id="app">
+  <h1>🎁 Secret Santa</h1>
+  <div class="card">
+    <p>Ready to see your Secret Santa groups?</p>
+    <!-- a button, not an auto-login: email scanners that prefetch the link must not use it up -->
+    <button type="button" data-action="login">Log in</button>
+  </div>
+</main>
+<p id="error" role="alert"></p>
+<script src="https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.umd.js" integrity="sha384-Pr74Q4nJqBcqXYMrsOS8tSw8t8N0Nayn7pWqFRdz9MsePI7uo55HNdxwrCcIRD8e" crossorigin="anonymous"></script>
+<script src="/app.js"></script>
+<script>
+bind({
+  async login() {
+    try {
+      await pb.collection("users").authWithOTP(param("otpId"), param("otp"))
+      location.replace("/")
+    } catch (err) {
+      render(document.getElementById("app"), html`<h1>🎁 Secret Santa</h1>
+        <div class="card"><p>This link has expired or was already used.</p><p><a href="/">Send me a new link</a></p></div>`)
+    }
+  },
+})
+</script>
+</body>
+</html>

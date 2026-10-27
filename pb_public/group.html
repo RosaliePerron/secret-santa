@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Group · Secret Santa</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main id="app"></main>
+<p id="error" role="alert"></p>
+<script src="https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.umd.js" integrity="sha384-Pr74Q4nJqBcqXYMrsOS8tSw8t8N0Nayn7pWqFRdz9MsePI7uo55HNdxwrCcIRD8e" crossorigin="anonymous"></script>
+<script src="/app.js"></script>
+<script>
+const app = document.getElementById("app")
+const id = param("id")
+const me = requireLogin()
+
+async function show() {
+  const group = await pb.collection("groups").getOne(id, { expand: "members" })
+  const members = group.expand?.members || []
+  const name = (uid) => members.find((m) => m.id === uid)?.name || "?"
+  const isHost = group.host === me.id
+  const byGroup = { filter: pb.filter("group = {:id}", { id }) }
+  const exchanges = await pb.collection("exchanges").getFullList({ ...byGroup, sort: "-year" })
+  const rules = isHost ? await pb.collection("exclusions").getFullList(byGroup) : []
+  const locked = exchanges[0]?.status === "drawn"
+  const memberOptions = members.map((m) => html`<option value="${m.id}">${m.name}</option>`)
+  document.title = `${group.name} · Secret Santa`
+
+  render(app, html`
+    <nav><a href="/">← My groups</a></nav>
+    <h1>${group.name}</h1>
+
+    <section class="card">
+      <h2>Exchanges</h2>
+      ${exchanges.length
+        ? html`<ul>${exchanges.map((x) => html`<li><a href="/exchange.html?id=${x.id}">${x.year}</a>
+            <span class="tag ${x.status}">${x.status}</span></li>`)}</ul>`
+        : html`<p class="muted">No exchange yet.</p>`}
+      ${isHost ? html`<form data-action="createExchange" class="row">
+        <input type="number" name="year" value="${new Date().getFullYear()}" min="2000" max="3000" required>
+        <button>Start exchange</button></form>` : ""}
+    </section>
+
+    <section class="card">
+      <h2>Members</h2>
+      <ul>${members.map((m) => html`<li>${m.name}${m.id === group.host ? html` <span class="tag">host</span>` : ""}</li>`)}</ul>
+      ${isHost ? html`<form data-action="invite" class="row">
+        <input name="name" placeholder="Name" required>
+        <input type="email" name="email" placeholder="Email" required>
+        <button>Invite</button></form>` : ""}
+    </section>
+
+    ${isHost ? html`<section class="card">
+      <h2>Rules</h2>
+      <p class="muted">These people never draw each other, in either direction. Only you can see this list.</p>
+      ${rules.length ? html`<ul>${rules.map((r) => html`<li>${name(r.a)} ✕ ${name(r.b)}
+        ${locked ? "" : html`<button type="button" class="link" data-action="deleteRule" data-id="${r.id}">remove</button>`}</li>`)}</ul>` : ""}
+      ${locked
+        ? html`<p class="muted">Rules are locked while the draw stands. Reset it or start next year's exchange to change them.</p>`
+        : html`<form data-action="addRule" class="row">
+            <select name="a" required>${memberOptions}</select> ✕ <select name="b" required>${memberOptions}</select>
+            <button>Add rule</button></form>`}
+    </section>` : ""}`)
+}
+
+bind({
+  async createExchange({ year }) {
+    const x = await pb.collection("exchanges").create({ group: id, year: Number(year) })
+    location.href = `/exchange.html?id=${x.id}`
+  },
+  async invite(values, form) {
+    await pb.send(`/api/groups/${id}/invite`, { method: "POST", body: values })
+    await show()
+  },
+  async addRule({ a, b }) {
+    await pb.collection("exclusions").create({ group: id, a, b })
+    await show()
+  },
+  async deleteRule({ id: ruleId }) {
+    await pb.collection("exclusions").delete(ruleId)
+    await show()
+  },
+})
+show().catch(showError)
+</script>
+</body>
+</html>

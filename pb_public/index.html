@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Secret Santa</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main id="app"></main>
+<p id="error" role="alert"></p>
+<script src="https://cdn.jsdelivr.net/npm/pocketbase@0.28.1/dist/pocketbase.umd.js" integrity="sha384-Pr74Q4nJqBcqXYMrsOS8tSw8t8N0Nayn7pWqFRdz9MsePI7uo55HNdxwrCcIRD8e" crossorigin="anonymous"></script>
+<script src="/app.js"></script>
+<script>
+const app = document.getElementById("app")
+
+async function show() {
+  if (!pb.authStore.isValid) {
+    return render(app, html`
+      <h1>🎁 Secret Santa</h1>
+      <form data-action="requestLink" class="card">
+        <label class="block">Your email <input type="email" name="email" required autocomplete="email"></label>
+        <button>Send me a login link</button>
+      </form>`)
+  }
+  const me = pb.authStore.record
+  const groups = await pb.collection("groups").getFullList({ sort: "name" })
+  render(app, html`
+    <header><h1>🎁 Secret Santa</h1><button type="button" class="link" data-action="logout">Log out</button></header>
+    <section class="card">
+      <h2>Your groups</h2>
+      ${groups.length
+        ? html`<ul>${groups.map((g) => html`<li><a href="/group.html?id=${g.id}">${g.name}</a></li>`)}</ul>`
+        : html`<p class="muted">No groups yet.</p>`}
+      <form data-action="createGroup" class="row">
+        <input name="name" placeholder="New group name" required maxlength="100">
+        <button>Create group</button>
+      </form>
+    </section>
+    <section class="card">
+      <h2>Your name</h2>
+      <form data-action="rename" class="row">
+        <input name="name" value="${me.name}" required>
+        <button>Save</button>
+      </form>
+    </section>`)
+}
+
+bind({
+  async requestLink({ email }) {
+    await pb.collection("users").requestOTP(email.trim().toLowerCase()) // invites store emails lowercased; lookup is case-sensitive
+    render(app, html`<h1>🎁 Secret Santa</h1>
+      <p class="card">If ${email} was invited, a login link is on its way. Check your inbox.</p>`)
+  },
+  async createGroup({ name }) {
+    const group = await pb.collection("groups").create({ name, host: pb.authStore.record.id })
+    location.href = `/group.html?id=${group.id}`
+  },
+  async rename({ name }) {
+    await pb.collection("users").update(pb.authStore.record.id, { name })
+    await pb.collection("users").authRefresh()
+    await show()
+  },
+  logout,
+})
+show().catch(showError)
+</script>
+</body>
+</html>

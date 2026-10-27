@@ -1,0 +1,39 @@
+:root {
+  color-scheme: light dark;
+  --bg: #fbf7f2; --card: #fff; --text: #2b2420; --muted: #75695f; --line: #e8dfd5;
+  --accent: #b3261e; --on-accent: #fff; --green: #1f6f43;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1b1715; --card: #26201d; --text: #f1e9e2; --muted: #a89d93; --line: #3a322d;
+          --accent: #ff7a6e; --on-accent: #1b1715; --green: #6fcf97; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 16px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--text); }
+main { max-width: 40rem; margin: 0 auto; padding: 1.5rem 1rem 5rem; }
+header { display: flex; justify-content: space-between; align-items: center; }
+h1 { font-size: 1.6rem; margin: .5rem 0 1rem; }
+h2 { font-size: 1.1rem; margin: 0 0 .75rem; }
+h3 { font-size: 1rem; margin: 1rem 0 .25rem; }
+a { color: var(--accent); }
+nav { margin-bottom: .5rem; }
+ul { padding-left: 1.25rem; margin: 0 0 .75rem; }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.25rem; margin: 0 0 1rem; }
+.highlight { border: 2px solid var(--accent); }
+.muted { color: var(--muted); }
+.tag { font-size: .75rem; padding: .1rem .5rem; border-radius: 99px; background: var(--line); }
+.tag.drawn { background: var(--green); color: var(--bg); }
+
+form { margin: .5rem 0 0; }
+.row, .item { display: flex; flex-wrap: wrap; gap: .5rem; align-items: center; }
+.item { padding: .5rem 0; border-top: 1px solid var(--line); }
+input, select, button { font: inherit; padding: .45rem .7rem; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+input:not([type=checkbox]) { flex: 1 1 10rem; min-width: 0; }
+button { background: var(--accent); color: var(--on-accent); border: 0; cursor: pointer; }
+button.link { background: none; color: var(--accent); padding: 0 .25rem; text-decoration: underline; }
+label.block { display: block; }
+label.block input { display: block; width: 100%; margin: .25rem 0 .75rem; }
+.check { display: inline-flex; gap: .35rem; align-items: center; margin: 0 1rem .5rem 0; }
+
+#error:empty { display: none; }
+#error { position: fixed; left: 1rem; right: 1rem; bottom: 1rem; max-width: 38rem; margin: 0 auto;
+         background: var(--accent); color: var(--on-accent); padding: .75rem 1rem; border-radius: 10px; }
