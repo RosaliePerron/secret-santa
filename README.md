@@ -60,6 +60,7 @@ pb_hooks/lib/draw.js      draw solver (randomized bipartite matching) + shared h
 pb_public/                index (login, my groups) · auth (link landing) · group · exchange
 PB_VERSION, fetch-pb.sh   pinned PocketBase release and its downloader
 Dockerfile, compose.yaml  container image + production compose file (HTTPS built in)
+.github/workflows/        deploy.yml: checks + deploy on every push to main
 api.check.mjs             end-to-end API + secrecy check (dev server only)
 ```
 
@@ -95,46 +96,66 @@ node pb_hooks/lib/draw.check.js                                          # draw 
 PB_SU_EMAIL=admin@example.com PB_SU_PASSWORD=... node api.check.mjs      # rules + flows, DEV server only
 ```
 
-`api.check.mjs` creates and then deletes its own data, so never point it at production. Run it after every PocketBase upgrade, because the access rules are what keep the draw secret.
+`api.check.mjs` creates and then deletes its own data, so never point it at production. The deploy pipeline runs it on every push, because the access rules are what keep the draw secret.
 
 ## Deployment
 
-The recommended setup is Docker Compose on a small server. PocketBase serves HTTPS itself, with a free Let's Encrypt certificate, so you don't need nginx or Caddy. If you'd rather not use Docker, see [Without Docker](#without-docker-systemd) at the end of this section.
+The app runs with Docker Compose on a small server, and PocketBase serves HTTPS itself with a free Let's Encrypt certificate. **Every push to `main` deploys automatically** through GitHub Actions (`.github/workflows/deploy.yml`):
+
+```
+push to main → draw solver check → build image → API + secrecy check against that image → rsync to server → docker compose up -d --build
+```
+
+If any check fails, nothing is deployed; the failure shows up in the repo's **Actions** tab. You can also start a deploy by hand from **Actions → Deploy → Run workflow**.
 
 ### What you need
-- A small Linux server (512 MB RAM is plenty) with **Docker** and the **compose plugin** installed.
-- A domain or subdomain, e.g. `santa.example.com`, with its DNS **A record** pointing to the server. Ports 80 and 443 must be open.
+- A small Linux server (512 MB RAM is plenty) with **Docker**, the **compose plugin** and **rsync** installed.
+- A domain or subdomain, e.g. `santa.example.com`, with its DNS **A record** pointing to the server. Ports 80 and 443 must be open, plus SSH for the deploys.
 - An SMTP account from any transactional email provider. Send from an address on a domain where you've set up the provider's SPF/DKIM records; otherwise login links end up in spam.
 
-### 1. Copy the app
+### 1. Prepare the server (once)
 
-From your machine (replace `deploy@server` with your server login):
-
-```sh
-ssh deploy@server 'sudo mkdir -p /opt/secret-santa && sudo chown deploy: /opt/secret-santa'
-rsync -av --delete Dockerfile compose.yaml .dockerignore PB_VERSION fetch-pb.sh \
-  pb_hooks pb_migrations pb_public deploy@server:/opt/secret-santa/
-```
-
-### 2. Start it
+As a user with sudo, where `deploy` is the account GitHub will log in as:
 
 ```sh
-ssh deploy@server
-cd /opt/secret-santa
-echo DOMAIN=santa.example.com > .env
-docker compose up -d --build
-docker compose logs -f          # wait until the certificate is issued, then Ctrl+C
+sudo usermod -aG docker deploy
+sudo mkdir -p /opt/secret-santa && sudo chown deploy: /opt/secret-santa
+echo DOMAIN=santa.example.com | sudo -u deploy tee /opt/secret-santa/.env
 ```
 
-This builds a ~42 MB image containing the pinned PocketBase binary and the app. The app runs as a non-root user and restarts on its own. All data (database, settings, certificates, backups) lives in the `pb_data` Docker volume, so it survives rebuilds. Migrations run on every start.
+### 2. Connect GitHub to the server (once)
 
-### 3. Create the admin account
+On your machine, create a key that is used only for deploys, authorize it on the server, and store it in GitHub. The commands use the [`gh` CLI](https://cli.github.com); you can also add the three secrets under **Settings → Secrets and variables → Actions**.
 
 ```sh
-docker compose exec app /pb/pocketbase superuser upsert you@example.com "<strong password>"
+ssh-keygen -t ed25519 -N "" -C "github-deploy" -f deploy_key
+ssh-copy-id -i deploy_key.pub deploy@santa.example.com
+
+gh secret set DEPLOY_HOST --body "deploy@santa.example.com"
+gh secret set DEPLOY_SSH_KEY < deploy_key
+ssh-keyscan santa.example.com | gh secret set DEPLOY_KNOWN_HOSTS
+rm deploy_key deploy_key.pub
 ```
 
-### 4. Configure the app
+`DEPLOY_KNOWN_HOSTS` pins the server's identity, so a deploy refuses to connect to anything else.
+
+Two security notes:
+- **The `deploy` user can run Docker, which is equivalent to root on that server.** The private key lives only in GitHub's encrypted secrets.
+- **Anyone who can push to `main` can deploy.** Consider protecting the branch.
+
+### 3. Deploy
+
+Push to `main`, or use **Run workflow**. The first deploy builds the image and starts the container. On the server, `cd /opt/secret-santa && docker compose logs -f` shows when the certificate has been issued.
+
+All data (database, settings, certificates, backups) lives in the `pb_data` Docker volume, so deploys never touch it. Migrations run on every start.
+
+### 4. Create the admin account (first deploy only)
+
+```sh
+ssh deploy@santa.example.com 'cd /opt/secret-santa && docker compose exec app /pb/pocketbase superuser upsert you@example.com "<strong password>"'
+```
+
+### 5. Configure the app
 
 Open `https://santa.example.com/_/` and log in as the admin. Then go to **Settings**:
 - **Application:** set **Application URL** to `https://santa.example.com`. Every email link uses it, so a wrong value breaks login. Optionally tick **Hide collection create and edit controls** to prevent accidental schema changes.
@@ -142,11 +163,11 @@ Open `https://santa.example.com/_/` and log in as the admin. Then go to **Settin
 - **Backups:** turn on automatic backups, e.g. cron `0 3 * * *` keeping 7. Backups are written inside the `pb_data` volume on the same server, so use S3-compatible storage if you can, or copy them off regularly (see [Backups](#backups)).
 - **Rate limiting** is already enabled by the migration, including 5 login-link requests per minute.
 
-### 5. Create the first host
+### 6. Create the first host
 
 Go to **Collections → users → New record**. Enter an email (**lowercase**) and a name; the password can be anything, since it's never used. That person logs in from the home page and creates the group. Everyone else joins through invitations.
 
-### 6. Smoke test
+### 7. Smoke test
 
 1. Request a login link for the host and check that it arrives.
 2. Log in, create a group, and invite a second address you control.
@@ -156,19 +177,24 @@ Leave the draw for when everyone has joined.
 
 ### Updating
 
-```sh
-# 1. Back up first: dashboard → Settings → Backups → "Initialize new backup"
-rsync -av --delete Dockerfile compose.yaml .dockerignore PB_VERSION fetch-pb.sh \
-  pb_hooks pb_migrations pb_public deploy@server:/opt/secret-santa/
-ssh deploy@server 'cd /opt/secret-santa && docker compose up -d --build'
-```
-
-- **Upgrading PocketBase:** change `PB_VERSION` and the rebuild downloads the new binary. Before you do, read the PocketBase changelog (it's pre-1.0, so releases can contain breaking changes) and run both checks locally against the new version.
+Push to `main`.
+- **Back up first** if the change includes a new migration: dashboard → **Settings → Backups → Initialize new backup**.
+- **Upgrading PocketBase:** change `PB_VERSION`. The pipeline downloads that version, and the API + secrecy check runs against it before anything is deployed. Still read the PocketBase changelog first: it's pre-1.0, so releases can contain breaking changes.
 - **Changing the schema:** add a new file in `pb_migrations/`. Don't edit `1_init.js` once it has been deployed, and don't change collections in the production dashboard, because the server would then write migration files that aren't in the repo.
+
+### Deploying by hand
+
+Use this if GitHub Actions is unavailable. It's the same thing the workflow does:
+
+```sh
+rsync -av --delete Dockerfile compose.yaml .dockerignore PB_VERSION fetch-pb.sh \
+  pb_hooks pb_migrations pb_public deploy@santa.example.com:/opt/secret-santa/
+ssh deploy@santa.example.com 'cd /opt/secret-santa && docker compose up -d --build'
+```
 
 ### Backups
 
-- **Automatic backups** (step 4) are written to `pb_data/backups` inside the volume.
+- **Automatic backups** (step 5) are written to `pb_data/backups` inside the volume.
 - **Copy them off the server:**
   ```sh
   docker compose cp app:/pb/pb_data/backups ./backups
@@ -178,7 +204,7 @@ ssh deploy@server 'cd /opt/secret-santa && docker compose up -d --build'
 
 ### Rollback
 
-1. Copy back the previous version of the code and run `docker compose up -d --build`.
+1. `git revert` the bad commit and push. The pipeline redeploys the previous code.
 2. If the data needs to go back too, restore the backup taken before the update from **Settings → Backups**.
 
 ### Behind an existing reverse proxy (nginx, Caddy, Traefik, …)
@@ -189,7 +215,7 @@ ssh deploy@server 'cd /opt/secret-santa && docker compose up -d --build'
 
 ### Without Docker (systemd)
 
-This is the same app running as a plain service. Steps 4–6 above still apply.
+This is the same app running as a plain service, deployed by hand. The automatic workflow assumes Docker. Steps 5–7 above still apply.
 
 ```sh
 rsync -av --delete pb_hooks pb_migrations pb_public PB_VERSION fetch-pb.sh deploy@server:/opt/secret-santa/

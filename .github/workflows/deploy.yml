@@ -1,0 +1,50 @@
+# On every push to main: build the image, run both checks against it, then deploy over SSH.
+# Setup (secrets, server): README → "Automatic deployment".
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy # one deploy at a time, never cancel one halfway
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Draw solver check
+        run: node pb_hooks/lib/draw.check.js
+
+      - name: Build image
+        run: docker build -t secret-santa .
+
+      - name: API + secrecy check against the image
+        run: |
+          docker run -d --name app -p 127.0.0.1:8090:8090 secret-santa
+          timeout 60 sh -c 'until curl -sf http://127.0.0.1:8090/api/health; do sleep 1; done'
+          docker exec app /pb/pocketbase superuser upsert ci@example.com ci-only-password
+          PB_SU_EMAIL=ci@example.com PB_SU_PASSWORD=ci-only-password node api.check.mjs
+
+      # ponytail: no pre-deploy snapshot, the daily PocketBase backup covers it;
+      # add a POST /api/backups call here if deploys start carrying risky migrations.
+      - name: Deploy
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          export RSYNC_RSH="ssh -i $HOME/.ssh/deploy_key -o StrictHostKeyChecking=yes"
+          rsync -av --delete Dockerfile compose.yaml .dockerignore PB_VERSION fetch-pb.sh \
+            pb_hooks pb_migrations pb_public "$DEPLOY_HOST:/opt/secret-santa/"
+          $RSYNC_RSH "$DEPLOY_HOST" 'cd /opt/secret-santa && docker compose up -d --build'
