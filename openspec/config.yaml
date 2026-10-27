@@ -1,5 +1,15 @@
 schema: spec-driven
 
+context: |
+  Product: Secret Santa platform for friends/family groups. Small scale (groups of ~3-30 people).
+  Tech stack: PocketBase (single binary, pinned version) with embedded SQLite.
+    - Server logic lives in pb_hooks/*.pb.js (PocketBase JSVM: no npm, no async).
+    - Schema changes via pb_migrations/*.js.
+    - Access control via PocketBase collection API rules, not hand-written checks.
+    - Frontend: static HTML + vanilla JS in pb_public/, PocketBase JS SDK from CDN, no build step.
+  Auth: email one-time code (OTP) only, delivered as a magic link. No passwords.
+  Principle: lightweight and minimal. Prefer built-in PocketBase features over custom code.
+
 # Project context (optional)
 # This is shown to AI when creating artifacts.
 # Add your tech stack, conventions, style guides, domain knowledge, etc.
