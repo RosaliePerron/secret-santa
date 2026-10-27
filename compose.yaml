@@ -1,0 +1,14 @@
+# Production: PocketBase serves HTTPS itself (Let's Encrypt) for $DOMAIN.
+#   echo DOMAIN=santa.example.com > .env && docker compose up -d --build
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    command: ["serve", "${DOMAIN:?put DOMAIN=santa.example.com in .env}"]
+    ports: ["80:80", "443:443"]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: 0 # non-root user binds 80/443 (Docker >= 20.10 does this by default)
+    volumes: ["pb_data:/pb/pb_data"]
+
+volumes:
+  pb_data:

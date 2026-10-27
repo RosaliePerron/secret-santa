@@ -59,6 +59,7 @@ pb_hooks/main.pb.js       validation hooks + routes: invite, draw, reset
 pb_hooks/lib/draw.js      draw solver (randomized bipartite matching) + shared helpers
 pb_public/                index (login, my groups) · auth (link landing) · group · exchange
 PB_VERSION, fetch-pb.sh   pinned PocketBase release and its downloader
+Dockerfile, compose.yaml  container image + production compose file (HTTPS built in)
 api.check.mjs             end-to-end API + secrecy check (dev server only)
 ```
 
@@ -74,6 +75,12 @@ api.check.mjs             end-to-end API + secrecy check (dev server only)
 ./pocketbase superuser upsert admin@example.com <password>
 docker run -d --name ss-mailpit -p 127.0.0.1:1026:1025 -p 127.0.0.1:8026:8025 axllent/mailpit:v1.21.0
 ./pocketbase serve                                   # http://127.0.0.1:8090, dashboard at /_/
+```
+
+Or run the production image locally instead of the binary:
+
+```sh
+docker build -t secret-santa . && docker run --rm -p 127.0.0.1:8090:8090 -v ss_dev_data:/pb/pb_data secret-santa
 ```
 
 1. In the dashboard, go to **Settings → Mail settings** and enable SMTP with host `127.0.0.1`, port `1026`, no TLS.
@@ -92,8 +99,10 @@ PB_SU_EMAIL=admin@example.com PB_SU_PASSWORD=... node api.check.mjs      # rules
 
 ## Deployment
 
+The recommended setup is Docker Compose on a small server. PocketBase serves HTTPS itself, with a free Let's Encrypt certificate, so you don't need nginx or Caddy. If you'd rather not use Docker, see [Without Docker](#without-docker-systemd) at the end of this section.
+
 ### What you need
-- A small Linux server (512 MB RAM is plenty) with `curl` and `unzip`.
+- A small Linux server (512 MB RAM is plenty) with **Docker** and the **compose plugin** installed.
 - A domain or subdomain, e.g. `santa.example.com`, with its DNS **A record** pointing to the server. Ports 80 and 443 must be open.
 - An SMTP account from any transactional email provider. Send from an address on a domain where you've set up the provider's SPF/DKIM records; otherwise login links end up in spam.
 
@@ -103,21 +112,91 @@ From your machine (replace `deploy@server` with your server login):
 
 ```sh
 ssh deploy@server 'sudo mkdir -p /opt/secret-santa && sudo chown deploy: /opt/secret-santa'
-rsync -av --delete pb_hooks pb_migrations pb_public PB_VERSION fetch-pb.sh deploy@server:/opt/secret-santa/
-ssh deploy@server 'cd /opt/secret-santa && ./fetch-pb.sh'
+rsync -av --delete Dockerfile compose.yaml .dockerignore PB_VERSION fetch-pb.sh \
+  pb_hooks pb_migrations pb_public deploy@server:/opt/secret-santa/
 ```
 
-This copies only the app files. It never touches `pb_data/` on the server, which holds the database and settings.
-
-### 2. Create the admin account
+### 2. Start it
 
 ```sh
-ssh deploy@server 'cd /opt/secret-santa && ./pocketbase superuser upsert you@example.com "<strong password>"'
+ssh deploy@server
+cd /opt/secret-santa
+echo DOMAIN=santa.example.com > .env
+docker compose up -d --build
+docker compose logs -f          # wait until the certificate is issued, then Ctrl+C
 ```
 
-### 3. Run it as a service
+This builds a ~42 MB image containing the pinned PocketBase binary and the app. The app runs as a non-root user and restarts on its own. All data (database, settings, certificates, backups) lives in the `pb_data` Docker volume, so it survives rebuilds. Migrations run on every start.
 
-Create `/etc/systemd/system/secret-santa.service`:
+### 3. Create the admin account
+
+```sh
+docker compose exec app /pb/pocketbase superuser upsert you@example.com "<strong password>"
+```
+
+### 4. Configure the app
+
+Open `https://santa.example.com/_/` and log in as the admin. Then go to **Settings**:
+- **Application:** set **Application URL** to `https://santa.example.com`. Every email link uses it, so a wrong value breaks login. Optionally tick **Hide collection create and edit controls** to prevent accidental schema changes.
+- **Mail settings:** set the sender name and address, and your SMTP host, port, username and password. Then click **Send test email**.
+- **Backups:** turn on automatic backups, e.g. cron `0 3 * * *` keeping 7. Backups are written inside the `pb_data` volume on the same server, so use S3-compatible storage if you can, or copy them off regularly (see [Backups](#backups)).
+- **Rate limiting** is already enabled by the migration, including 5 login-link requests per minute.
+
+### 5. Create the first host
+
+Go to **Collections → users → New record**. Enter an email (**lowercase**) and a name; the password can be anything, since it's never used. That person logs in from the home page and creates the group. Everyone else joins through invitations.
+
+### 6. Smoke test
+
+1. Request a login link for the host and check that it arrives.
+2. Log in, create a group, and invite a second address you control.
+3. Start an exchange and add a wish list item.
+
+Leave the draw for when everyone has joined.
+
+### Updating
+
+```sh
+# 1. Back up first: dashboard → Settings → Backups → "Initialize new backup"
+rsync -av --delete Dockerfile compose.yaml .dockerignore PB_VERSION fetch-pb.sh \
+  pb_hooks pb_migrations pb_public deploy@server:/opt/secret-santa/
+ssh deploy@server 'cd /opt/secret-santa && docker compose up -d --build'
+```
+
+- **Upgrading PocketBase:** change `PB_VERSION` and the rebuild downloads the new binary. Before you do, read the PocketBase changelog (it's pre-1.0, so releases can contain breaking changes) and run both checks locally against the new version.
+- **Changing the schema:** add a new file in `pb_migrations/`. Don't edit `1_init.js` once it has been deployed, and don't change collections in the production dashboard, because the server would then write migration files that aren't in the repo.
+
+### Backups
+
+- **Automatic backups** (step 4) are written to `pb_data/backups` inside the volume.
+- **Copy them off the server:**
+  ```sh
+  docker compose cp app:/pb/pb_data/backups ./backups
+  ```
+- **Restore:** go to **Settings → Backups**, pick a backup and click **Restore**. The app restarts on its own.
+- **Never run `docker compose down -v`.** The `-v` flag deletes the volume, which means the database. Plain `down` is safe.
+
+### Rollback
+
+1. Copy back the previous version of the code and run `docker compose up -d --build`.
+2. If the data needs to go back too, restore the backup taken before the update from **Settings → Backups**.
+
+### Behind an existing reverse proxy (nginx, Caddy, Traefik, …)
+
+1. In `compose.yaml`, use `command: ["serve", "--http=0.0.0.0:8090"]` and `ports: ["127.0.0.1:8090:8090"]`, and drop the `sysctls` lines. `DOMAIN` is then not needed.
+2. Proxy your domain to `127.0.0.1:8090`.
+3. Go to **Settings → Application → User IP proxy headers** and add `X-Forwarded-For` (or `X-Real-IP`). Without that header, the rate limiter treats every visitor as the same IP.
+
+### Without Docker (systemd)
+
+This is the same app running as a plain service. Steps 4–6 above still apply.
+
+```sh
+rsync -av --delete pb_hooks pb_migrations pb_public PB_VERSION fetch-pb.sh deploy@server:/opt/secret-santa/
+ssh deploy@server 'cd /opt/secret-santa && ./fetch-pb.sh && ./pocketbase superuser upsert you@example.com "<strong password>"'
+```
+
+Then create `/etc/systemd/system/secret-santa.service`:
 
 ```ini
 [Unit]
@@ -139,52 +218,11 @@ WantedBy=multi-user.target
 ```
 
 ```sh
-sudo systemctl daemon-reload
-sudo systemctl enable --now secret-santa
-journalctl -u secret-santa -f        # logs
+sudo systemctl daemon-reload && sudo systemctl enable --now secret-santa
 ```
 
-`serve santa.example.com` listens on ports 80 and 443 and gets a Let's Encrypt certificate automatically. Migrations run on every start.
-
-### 4. Configure the app
-
-Open `https://santa.example.com/_/` and log in as the admin. Then go to **Settings**:
-- **Application:** set **Application URL** to `https://santa.example.com`. Every email link uses it, so a wrong value breaks login. Optionally tick **Hide collection create and edit controls** to prevent accidental schema changes.
-- **Mail settings:** set the sender name and address, and your SMTP host, port, username and password. Then click **Send test email**.
-- **Backups:** turn on automatic backups, e.g. cron `0 3 * * *` keeping 7. If you can, use S3-compatible storage so backups don't live only on the server.
-- **Rate limiting** is already enabled by the migration, including 5 login-link requests per minute.
-
-### 5. Create the first host
-
-Go to **Collections → users → New record**. Enter an email (**lowercase**) and a name; the password can be anything, since it's never used. That person logs in from the home page and creates the group. Everyone else joins through invitations.
-
-### 6. Smoke test
-
-1. Request a login link for the host and check that it arrives.
-2. Log in, create a group, and invite a second address you control.
-3. Start an exchange and add a wish list item.
-
-Leave the draw for when everyone has joined.
-
-### Updating
-
-```sh
-# 1. Back up first: dashboard → Settings → Backups → "Initialize new backup"
-rsync -av --delete pb_hooks pb_migrations pb_public PB_VERSION fetch-pb.sh deploy@server:/opt/secret-santa/
-ssh deploy@server 'cd /opt/secret-santa && ./fetch-pb.sh && sudo systemctl restart secret-santa'
-```
-
-- **Upgrading PocketBase:** before changing `PB_VERSION`, read the PocketBase changelog. PocketBase is pre-1.0, so releases can contain breaking changes. Then run both checks locally against the new version.
-- **Changing the schema:** add a new file in `pb_migrations/`. Don't edit `1_init.js` once it has been deployed, and don't change collections in the production dashboard, because the server would then write migration files that aren't in the repo.
-
-### Rollback
-
-1. Copy back the previous version of the code with the same `rsync` command and restart the service.
-2. If the data needs to go back too, go to **Settings → Backups**, pick the backup taken before the update, and click **Restore**. The app restarts on its own.
-
-### Behind an existing reverse proxy (nginx, Caddy, …)
-
-Run `pocketbase serve --http 127.0.0.1:8090` instead of `serve santa.example.com`, drop the `AmbientCapabilities` line, and proxy your domain to `127.0.0.1:8090`. Then go to **Settings → Application → User IP proxy headers** and add `X-Forwarded-For` (or `X-Real-IP`). Without that header, the rate limiter treats every visitor as the same IP.
+- **Updating:** run the same `rsync`, then `./fetch-pb.sh` and `sudo systemctl restart secret-santa`.
+- **Data:** it lives in `/opt/secret-santa/pb_data/`.
 
 ## Limits (on purpose, for now)
 
