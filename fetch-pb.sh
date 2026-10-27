@@ -7,6 +7,7 @@ case $(uname -m) in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) echo "
 url="https://github.com/pocketbase/pocketbase/releases/download/v$v/pocketbase_${v}_${os}_${arch}.zip"
 tmp=$(mktemp -d)
 curl -fsSL "$url" -o "$tmp/pb.zip"
-unzip -o -q "$tmp/pb.zip" pocketbase -d "$(dirname "$0")"
+unzip -o -q "$tmp/pb.zip" pocketbase -d "$tmp"
+mv "$tmp/pocketbase" "$(dirname "$0")/pocketbase"   # rename, so it works while the old binary is running
 rm -rf "$tmp"
 echo "pocketbase v$v ready"
